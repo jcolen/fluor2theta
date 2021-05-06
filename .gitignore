@@ -1,0 +1,7 @@
+__pycache__
+slurm_scripts
+*.sh
+*.swp
+figures
+models
+

@@ -1,179 +1,118 @@
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import os
+import matplotlib 
+matplotlib.use('Agg')
 import argparse
+import os
+import numpy as np
+import pandas as pd
 from time import time
+
+import torch
 from torchvision import transforms
 
+from datasets import NematicsDataset
 import data_processing as dp
-from datasets import NematicsSequenceDataset
-from models import TimeEvolver
+import encoder_decoder_predictor as edp
+import unet_predictor as up
+import matplotlib.pyplot as plt
 
-class WeightedJointLoss(nn.MSELoss):
-	def __init__(self, size_average=None, reduction: str='mean', 
-				 beta=0.0001) -> None:
-		super(WeightedJointLoss, self).__init__(size_average, reduction)
-		self.reduction = reduction
-		self.beta = beta
-	
-	def forward(self, ypred, y, x, logvar):
-		yloss = F.mse_loss(ypred, y)
-		vaeloss = 0.5 * torch.mean(torch.sum(x * x + logvar.exp() - logvar - 1, dim=-1))
-		return yloss + self.beta * vaeloss
+matplotlib.rcParams['xtick.bottom'] = False
+matplotlib.rcParams['xtick.labelsize'] = 0
+matplotlib.rcParams['ytick.left'] = False
+matplotlib.rcParams['ytick.labelsize'] = 0
+matplotlib.rcParams['axes.labelsize'] = 5
+matplotlib.rcParams['axes.titlesize'] = 5
 
-class ModelContainer(object):
-	def __init__(self, device):
-		super(ModelContainer, self).__init__()
-		self.optimizers = []
-		self.schedulers = []
-		self.loss_mins = []
-		self.losses = []
-		self.best_epochs = []
-		self.models = []
-		self.device = device
-	
-	def train(self):
-		for model in self.models:
-			model.train()
-		return self
+preds_dict = {
+	'basic': edp.EncoderDecoderPredictor,
+	'unet': up.UnetPredictor,
+}
 
-	def eval(self):
-		for model in self.models:
-			model.eval()
-		return self
+def get_model(args):
+	kwargs = {
+		'channels': args.channels,
+		'mode': args.mode,
+		'sample': args.sample,
+	}
+	return preds_dict[args.predictor](**kwargs)
 
-	def __getitem__(self, idx):
-		return self.models[idx]
-	
-	def __len__(self):
-		return len(self.models)
-
-	def add_model(self, model, force_new=False):
-		if not force_new and os.path.exists('models/%s' % model.name):
-			print('Loading model state dict from file')
-			model_info = torch.load('models/%s' % model.name)
-			model.load_state_dict(model_info['state_dict'])
-			self.loss_mins.append(model_info['loss'])
-			self.losses.append(model_info['losses'])
-		else:
-			self.loss_mins.append(np.Inf)
-			self.losses.append([])
-		self.models.append(model.to(self.device))
-		self.optimizers.append(torch.optim.Adam(model.parameters(), lr=0.001))
-		self.schedulers.append(torch.optim.lr_scheduler.ExponentialLR(self.optimizers[-1], 0.92))
-		self.best_epochs.append(len(self.losses[-1]))
-		print(model.name)
-
-def iterate_loader(models, loader, criterion):
-	losses = [0,] * len(models)
+def iterate_loader(model, loader, optimizer, criterion, device):
+	loss = 0
 	for i, batch in enumerate(loader):
-		for j in range(len(models)):
-			losses[j] += models[j].batch_step(batch, criterion, models.optimizers[j], 
-				device=models.device, depth=args.depth)
-		if args.trial and i == 2:	break
-	return [loss / i for loss in losses]
-
-def predict(model, device, loader, outfile):
-	model.eval()
-	with open(outfile, 'w') as fout:
-		with torch.no_grad():
-			for cnt, batch in enumerate(loader):
-				labels, preds = model.batch_predict_encoder(batch, device)
-				for i in range(labels.shape[0]):
-					for j in range(labels.shape[1]):
-						fout.write('%g\t' % labels[i, j])
-					for j in range(preds.shape[1]):
-						fout.write('%g\t' % preds[i, j])
-					fout.write('\n')
-				if args.trial and cnt == 2:	break
+		for key in batch:
+			batch[key] = batch[key].to(device)
+		loss += model.batch_step(batch, criterion, optimizer)
+	return loss / i
 
 if __name__=='__main__':
 	parser = argparse.ArgumentParser()
-	parser.add_argument('-d', '--dir', type=str, 
-		default='/home/jcolen/data/short_time_multi_parameter/') 
-	parser.add_argument('-r', '--random_crop', type=int, default=32, 
-		help='Crop size of image')
-	parser.add_argument('-f', '--num_frames', type=int, default=8, 
-		help='Number of frames')
-	parser.add_argument('-c', '--encoder_channels', type=str, nargs='+', default=['1,16,16,32,32'])
-	parser.add_argument('-k', '--kernel_size', type=int, default=3)
-	parser.add_argument('--dropout', type=float, default=0.1)
-	parser.add_argument('--beta', type=float, default=0.0001)
-	parser.add_argument('--depth', type=int, default=2)
-	parser.add_argument('--extra_latents', type=int, default=2)
-	parser.add_argument('-e', '--epochs', type=int, default=100)
+	
+	#Training parameters
+	parser.add_argument('-d', '--directory', type=str, default='/home/jcolen/data/short_time_multi_parameter')
+	parser.add_argument('--patient', type=int, default=100)
 	parser.add_argument('-b', '--batch_size', type=int, default=32)
-	parser.add_argument('--num_workers', type=int, default=6)
 	parser.add_argument('--validation_split', type=float, default=0.2)
-	parser.add_argument('--force_new', action='store_true')
-	parser.add_argument('--trial', action='store_true')
+	parser.add_argument('--num_workers', type=int, default=3)
+	parser.add_argument('--crop_size', type=int, default=64)
+
+	#NN parameters
+	parser.add_argument('-p', '--predictor', choices=preds_dict.keys(), default='basic')
+	parser.add_argument('--sample', choices=['upsample', 'downsample'], default='upsample')
+	parser.add_argument('--mode', choices=['bilinear', 'conv'], default='bilinear')
+	parser.add_argument('-c', '--channels', type=int, nargs='+', default=[2,4,6])
 	args = parser.parse_args()
 
+	#GPU or CPU
 	device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 	pin_memory = True
 	print(device)
+	
+	# Model
+	model = get_model(args)
+	criterion = model.get_criterion()
+	loss_min = np.Inf
+	losses = []
+	model.to(device)
+	optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+	scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.92)
+	print(model.name)
 
-	#Dataset
-	transform = transforms.Compose([
-		dp.Sin2t(),
-		dp.RandomTranspose(),
-		dp.RandomFlip(),
-		dp.RandomCrop(args.random_crop),
-		dp.AverageTimeLabel(),
-		dp.SwapTimeChannelAxes(),
-		dp.ToTensor()])
-	dataset = NematicsSequenceDataset(args.dir, args.num_frames, transform=transform, 
-		validation_split=args.validation_split)
-	train_loader = dataset.get_loader(dataset.train_indices, args.batch_size, args.num_workers, pin_memory)
-	test_loader = dataset.get_loader(dataset.test_indices, args.batch_size, args.num_workers, pin_memory)
-
-	models = ModelContainer(device)
-	optimizers, schedulers = [], []
-	for ch in args.encoder_channels:
-		models.add_model(TimeEvolver(
-			encoder_channels=[int(c) for c in ch.split(',')],
-			extra_latents=args.extra_latents,
-			params=dataset.label_names,
-			num_frames=args.num_frames,
-			pooling=True))
-		#models.add_model(TimeEvolver(
-		#	encoder_channels=[int(c) for c in ch.split(',')],
-		#	params=dataset.label_names,
-		#	num_frames=args.num_frames,
-		#	pooling=False))
-	criterion = WeightedJointLoss(beta=args.beta)
+	# Dataset
+	dataset = NematicsDataset(args.directory,
+		validation_split=args.validation_split,
+		transform=model.get_transform(crop_size=args.crop_size))
+	loader = dataset.get_loader(dataset.train_indices, args.batch_size, 2, pin_memory)
+	train_loader = dataset.get_loader(dataset.train_indices, args.batch_size, 
+									  args.num_workers, pin_memory)
+	test_loader = dataset.get_loader(dataset.test_indices, args.batch_size, 
+									 args.num_workers, pin_memory)
 
 	#Training
-	patient = 20
-	for epoch in range(args.epochs):
-		flag = True
-		for best_epoch in models.best_epochs:
-			if epoch - best_epoch < patient:
-				flag = False
-		if flag:
-			print('early stop at epoch %g'%best_epoch)
+	patient = args.patient
+	best_epoch, epoch = 0, -1
+	while True:
+		epoch += 1
+		if epoch - best_epoch >= patient:
+			print('early stop at epoch %g' % best_epoch)
 			break
 		
 		t_ini = time()
-		loss_trains = iterate_loader(models.train(), train_loader, criterion)
-		loss_tests	= iterate_loader(models.eval(), test_loader, criterion)
+		loss_train = iterate_loader(model.train(), train_loader, optimizer, criterion, device)
+		with torch.no_grad():
+			loss_test = iterate_loader(model.eval(), test_loader, optimizer, criterion, device)
 		t_end = time()
-		
-		print('Epoch %g: time=%g' % (epoch, t_end - t_ini))
-		for i in range(len(models)):
-			models.schedulers[i].step()
-			print('\tloss_train=%g, loss_test=%g' % (loss_trains[i], loss_tests[i]), flush=True)
-			if loss_tests[i] < models.loss_mins[i]:
-				models.loss_mins[i] = loss_tests[i]
-				torch.save(
-					{'state_dict': models[i].state_dict(),
-					 'loss': loss_tests[i],
-					 'losses': models.losses[i],
-					 'beta': args.beta,
-					 'depth': args.depth},
-					 'models/%s' % models[i].name)
-				predict(models[i], device, test_loader, 'predictions/%s' % models[i].name)
-				models.best_epochs[i] = epoch
+		print('Epoch %g: train: %g, test: %g\ttime=%g' % \
+			(epoch, loss_train, loss_test, t_end - t_ini), flush=True)
+		scheduler.step(loss_test)
+		losses.append(loss_test)
+		if loss_test < loss_min:
+			batch = next(iter(test_loader))
+			for key in batch:
+				batch[key] = batch[key].to(device)
+			model.eval().predict_plot(batch)
+			torch.save(
+				{'state_dict': model.state_dict(),
+				 'loss': loss_test,
+				 'losses': losses},
+				 'models/%s' % (model.name))
+			best_epoch = epoch
+			loss_min = loss_test

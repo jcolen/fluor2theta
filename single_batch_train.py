@@ -12,6 +12,7 @@ from torchvision import transforms
 from datasets import NematicsDataset
 import data_processing as dp
 import encoder_decoder_predictor as edp
+import unet_predictor as up
 import matplotlib.pyplot as plt
 
 matplotlib.rcParams['xtick.bottom'] = False
@@ -21,13 +22,18 @@ matplotlib.rcParams['ytick.labelsize'] = 0
 matplotlib.rcParams['axes.labelsize'] = 5
 matplotlib.rcParams['axes.titlesize'] = 5
 
+preds_dict = {
+	'basic': edp.EncoderDecoderPredictor,
+	'unet': up.UnetPredictor,
+}
+
 def get_model(args):
 	kwargs = {
 		'channels': args.channels,
 		'mode': args.mode,
 		'sample': args.sample,
 	}
-	return edp.EncoderDecoderPredictor(**kwargs)
+	return preds_dict[args.predictor](**kwargs)
 
 
 if __name__=='__main__':
@@ -40,6 +46,7 @@ if __name__=='__main__':
 	parser.add_argument('--crop_size', type=int, default=64)
 
 	#NN parameters
+	parser.add_argument('-p', '--predictor', choices=preds_dict.keys(), default='basic')
 	parser.add_argument('--sample', choices=['upsample', 'downsample'], default='upsample')
 	parser.add_argument('--mode', choices=['bilinear', 'conv'], default='bilinear')
 	parser.add_argument('-c', '--channels', type=int, nargs='+', default=[2,4,6])
@@ -65,6 +72,8 @@ if __name__=='__main__':
 		transform=model.get_transform(crop_size=args.crop_size))
 	loader = dataset.get_loader(dataset.train_indices, args.batch_size, 2, pin_memory)
 	batch = next(iter(loader))
+	for key in batch:
+		batch[key] = batch[key].to(device)
 
 	print('Beginning training', flush=True)
 	
@@ -80,14 +89,12 @@ if __name__=='__main__':
 			break
 		
 		t_ini = time()
-		loss = model.train().batch_step(batch['x'].to(device),
-										batch['y'].to(device),
-										criterion, optimizer)
+		loss = model.train().batch_step(batch, criterion, optimizer)
 		t_end = time()
 		print('Epoch %g: loss: %g\ttime=%g' % \
 			(epoch, loss, t_end - t_ini), flush=True)
 		scheduler.step(loss)
 		if loss < loss_min:
-			model.eval().predict_plot(batch['x'].to(device), batch['y'].to(device))
+			model.eval().predict_plot(batch)
 			best_epoch = epoch
 			loss_min = loss

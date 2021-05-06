@@ -8,6 +8,7 @@ import os
 import math
 import matplotlib.pyplot as plt
 from conv_layers import CnnCell, DeCnnCell, FlatCnnCell, UpsampleCell, DownsampleCell
+from base_predictor import BasePredictor
 import data_processing as dp
 
 class UpsampleEncoder(nn.Module):
@@ -86,7 +87,7 @@ class UpsampleDecoder(nn.Module):
 Generic encoder/decoder based frame predictor
 '''
 
-class EncoderDecoderPredictor(nn.Module):
+class EncoderDecoderPredictor(BasePredictor):
 	def __init__(self,
 				 channels,
 				 recurrent='lstm',
@@ -118,52 +119,3 @@ class EncoderDecoderPredictor(nn.Module):
 		x = x.div(norm.expand_as(x))
 
 		return x
-
-	def batch_step(self, x, y, criterion, optimizer):
-		if self.training:	optimizer.zero_grad()
-		preds = self(x)
-		loss = criterion(preds, y)
-		if self.training:
-			loss.backward()
-			optimizer.step()
-		return loss.item()
-	
-	def get_criterion(self):
-		return F.l1_loss
-	
-	def get_transform(self, flip=0.5, transpose=0.5, crop_size=48):
-		return transforms.Compose([
-			dp.ProcessInputs(),
-			dp.RandomFlip(flip),
-			dp.RandomTranspose(transpose),
-			dp.RandomCrop(crop_size),
-			dp.ToTensor()])
-	
-	def plot_angle(self, ax, x, cmap='BuPu', vmin=-1, vmax=1):
-		ax.clear()
-		ax.set_xticks([])
-		ax.set_yticks([])
-		ax.imshow(x[0].cpu().numpy(), cmap=cmap, vmin=vmin, vmax=vmax)
-
-	def predict_plot(self, x, y, savedir='figures', cmap='BuPu'):
-		with torch.no_grad():
-			preds = self(x)
-			nplots = min(x.shape[0], 2)
-			fig, ax = plt.subplots(nplots, 4, 
-								   figsize=((12, 4*nplots)))
-			for i in range(nplots):
-				ax[i, 0].imshow(x[i, 0].cpu().numpy(), vmin=0, vmax=1)
-				self.plot_angle(ax[i, 1], y[i])
-				self.plot_angle(ax[i, 2], preds[i])
-				self.plot_angle(ax[i, 3], y[i] - preds[i], cmap='bwr', vmin=-2, vmax=2)
-			
-			ax[0, 0].set_title('Fluorescence')
-			ax[0, 1].set_title('Target')
-			ax[0, 2].set_title('Prediction')
-			ax[0, 3].set_title('Difference')
-
-			plt.tight_layout()
-			plt.savefig(os.path.join(savedir, '%s.png' % self.name),
-						dpi=200)
-			fig.canvas.draw()
-			fig.clf()

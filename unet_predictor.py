@@ -26,6 +26,7 @@ class UnetPredictor(BasePredictor):
 			else:
 				self.cells.append(UpsampleCell(channels[-i], channels[-(i+1)]))
 				self.cells.append(FlatCnnCell(2*channels[-(i+1)], channels[-(i+1)]))
+		self.cells.append(FlatCnnCell(channels[0], 2))
 			
 
 	def forward(self, x):

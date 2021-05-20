@@ -1,10 +1,6 @@
 import matplotlib 
 matplotlib.use('Agg')
 import argparse
-import os
-import numpy as np
-from time import time
-import torch
 import pytorch_lightning as pl
 
 from datasets import NematicsDataset
@@ -18,15 +14,13 @@ preds_dict = {
 	'unet': up.UnetPredictor,
 	'r50': fcn.fcn_resnet50,
 	'r101': fcn.fcn_resnet101,
-	'upy': fcn.unet_pytorch
 }
 
 if __name__=='__main__':
 	parser = argparse.ArgumentParser()
-	
+
 	#Training parameters
 	parser.add_argument('-d', '--directory', type=str, default='/home/jcolen/data/short_time_multi_parameter')
-	parser.add_argument('--patient', type=int, default=100)
 	parser.add_argument('-b', '--batch_size', type=int, default=32)
 	parser.add_argument('--validation_split', type=float, default=0.2)
 	parser.add_argument('--num_workers', type=int, default=3)
@@ -37,11 +31,9 @@ if __name__=='__main__':
 	parser.add_argument('--sample', choices=['upsample', 'downsample'], default='upsample')
 	parser.add_argument('--mode', choices=['bilinear', 'conv'], default='bilinear')
 	parser.add_argument('-c', '--channels', type=int, nargs='+', default=[2,4,6])
+	parser = pl.Trainer.add_argparse_args(parser)
 	args = parser.parse_args()
 
-	#GPU or CPU
-	pin_memory = True
-	
 	# Model
 	model = preds_dict[args.predictor](**vars(args))
 	print(model.name)
@@ -56,5 +48,7 @@ if __name__=='__main__':
 									 args.num_workers)
 
 	logger = pl.loggers.TensorBoardLogger('tb_logs', name=model.name)
-	trainer = pl.Trainer(gpus=1, logger=logger, log_every_n_steps=min(len(train_loader), 50))
+	trainer = pl.Trainer.from_argparse_args(args)
+	trainer.logger = logger
+	trainer.log_every_n_steps = min(len(train_loader), 50)
 	trainer.fit(model, train_loader, test_loader)

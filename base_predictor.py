@@ -40,7 +40,7 @@ class BasePredictor(nn.Module):
 		if self.training:  optimizer.zero_grad()
 		x, y0 = self.getxy(batch)
 		y = self(x)
-		loss = criterion(y0, y)
+		loss = criterion(y, y0)
 		if self.training:
 			loss.backward()
 			optimizer.step()

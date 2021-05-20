@@ -7,7 +7,7 @@ import skimage.transform
 
 from torchvision import transforms
 
-from torch.utils.data.sampler import SubsetRandomSampler
+from winding import winding
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -18,8 +18,16 @@ class ProcessInputs(object):
 		cos_squared = nx * nx
 		sin2t = 2 * nx * ny
 		cos2t = nx * nx - ny * ny
+		theta = np.arctan2(ny, nx)
+		theta[theta < 0] += np.pi
+		theta[theta > np.pi] -= np.pi
+		wind = winding(theta, radius=2)
+		label = (2 * wind + 1).astype(int)
 		return {'x': cos_squared[None],
-				'y': np.stack((sin2t, cos2t))}
+				'y': np.stack((sin2t, cos2t)),
+				'theta': theta[None],
+				'winding': wind[None],
+				'label': label}
 		
 class RandomCrop(object):
 	def __init__(self, crop_size, ndims=2):
@@ -75,5 +83,6 @@ class RandomFlip(object):
 class ToTensor(object):
 	def __call__(self, sample):
 		for key in sample.keys():
-			sample[key] = torch.tensor(sample[key].copy(), dtype=torch.float32)
+			sample[key] = torch.tensor(sample[key].copy(), 
+				dtype=torch.int64 if sample[key].dtype == int else torch.float32)
 		return sample

@@ -13,6 +13,7 @@ from datasets import NematicsDataset
 import data_processing as dp
 import encoder_decoder_predictor as edp
 import unet_predictor as up
+import fcn_resnet_wrapper as fcn
 import matplotlib.pyplot as plt
 
 matplotlib.rcParams['xtick.bottom'] = False
@@ -25,6 +26,9 @@ matplotlib.rcParams['axes.titlesize'] = 5
 preds_dict = {
 	'basic': edp.EncoderDecoderPredictor,
 	'unet': up.UnetPredictor,
+	'r50': fcn.fcn_resnet50,
+	'r101': fcn.fcn_resnet101,
+	'upy': fcn.unet_pytorch
 }
 
 def get_model(args):

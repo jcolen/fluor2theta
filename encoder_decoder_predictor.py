@@ -90,12 +90,9 @@ Generic encoder/decoder based frame predictor
 class EncoderDecoderPredictor(BasePredictor):
 	def __init__(self,
 				 channels,
-				 recurrent='lstm',
 				 mode='bilinear',
-				 residual=True,
-				 num_recurrents=2,
-				 layers_per_recurrent=1,
-				 sample='upsample'):
+				 sample='upsample',
+				 **kwargs):
 		
 		super(EncoderDecoderPredictor, self).__init__()
 

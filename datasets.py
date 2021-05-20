@@ -68,6 +68,15 @@ class NematicsDataset(Dataset):
 		indices = np.arange(len(self))
 		np.random.shuffle(indices)
 		self.train_indices, self.test_indices = indices[split:], indices[:split]
+	
+	def take_folder(self, folder, validation_split=0.2):
+		self.dataframe = self.dataframe[self.dataframe.folder == folder]
+		self.dataframe = self.dataframe.reset_index(drop=True)
+		split	= int(np.floor(validation_split * len(self)))
+		indices = np.arange(len(self))
+		np.random.shuffle(indices)
+		self.train_indices, self.test_indices = indices[split:], indices[:split]
+		print('Dataset has %d items' % len(self))
 
 	def list_file_indices(self, path):
 		idxs = None

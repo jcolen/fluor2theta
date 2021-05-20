@@ -3,25 +3,15 @@ matplotlib.use('Agg')
 import argparse
 import os
 import numpy as np
-import pandas as pd
 from time import time
-
 import torch
-from torchvision import transforms
+import pytorch_lightning as pl
 
 from datasets import NematicsDataset
 import data_processing as dp
 import encoder_decoder_predictor as edp
 import unet_predictor as up
 import fcn_resnet_wrapper as fcn
-import matplotlib.pyplot as plt
-
-matplotlib.rcParams['xtick.bottom'] = False
-matplotlib.rcParams['xtick.labelsize'] = 0
-matplotlib.rcParams['ytick.left'] = False
-matplotlib.rcParams['ytick.labelsize'] = 0
-matplotlib.rcParams['axes.labelsize'] = 5
-matplotlib.rcParams['axes.titlesize'] = 5
 
 preds_dict = {
 	'basic': edp.EncoderDecoderPredictor,
@@ -30,22 +20,6 @@ preds_dict = {
 	'r101': fcn.fcn_resnet101,
 	'upy': fcn.unet_pytorch
 }
-
-def get_model(args):
-	kwargs = {
-		'channels': args.channels,
-		'mode': args.mode,
-		'sample': args.sample,
-	}
-	return preds_dict[args.predictor](**kwargs)
-
-def iterate_loader(model, loader, optimizer, criterion, device):
-	loss = 0
-	for i, batch in enumerate(loader):
-		for key in batch:
-			batch[key] = batch[key].to(device)
-		loss += model.batch_step(batch, criterion, optimizer)
-	return loss / i
 
 if __name__=='__main__':
 	parser = argparse.ArgumentParser()
@@ -66,57 +40,21 @@ if __name__=='__main__':
 	args = parser.parse_args()
 
 	#GPU or CPU
-	device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 	pin_memory = True
-	print(device)
 	
 	# Model
-	model = get_model(args)
-	criterion = model.get_criterion()
-	loss_min = np.Inf
-	losses = []
-	model.to(device)
-	optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-	scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.92)
+	model = preds_dict[args.predictor](**vars(args))
 	print(model.name)
 
 	# Dataset
 	dataset = NematicsDataset(args.directory,
 		validation_split=args.validation_split,
 		transform=model.get_transform(crop_size=args.crop_size))
-	loader = dataset.get_loader(dataset.train_indices, args.batch_size, 2, pin_memory)
 	train_loader = dataset.get_loader(dataset.train_indices, args.batch_size, 
-									  args.num_workers, pin_memory)
+									  args.num_workers)
 	test_loader = dataset.get_loader(dataset.test_indices, args.batch_size, 
-									 args.num_workers, pin_memory)
+									 args.num_workers)
 
-	#Training
-	patient = args.patient
-	best_epoch, epoch = 0, -1
-	while True:
-		epoch += 1
-		if epoch - best_epoch >= patient:
-			print('early stop at epoch %g' % best_epoch)
-			break
-		
-		t_ini = time()
-		loss_train = iterate_loader(model.train(), train_loader, optimizer, criterion, device)
-		with torch.no_grad():
-			loss_test = iterate_loader(model.eval(), test_loader, optimizer, criterion, device)
-		t_end = time()
-		print('Epoch %g: train: %g, test: %g\ttime=%g' % \
-			(epoch, loss_train, loss_test, t_end - t_ini), flush=True)
-		scheduler.step(loss_test)
-		losses.append(loss_test)
-		if loss_test < loss_min:
-			batch = next(iter(test_loader))
-			for key in batch:
-				batch[key] = batch[key].to(device)
-			model.eval().predict_plot(batch)
-			torch.save(
-				{'state_dict': model.state_dict(),
-				 'loss': loss_test,
-				 'losses': losses},
-				 'models/%s' % (model.name))
-			best_epoch = epoch
-			loss_min = loss_test
+	logger = pl.loggers.TensorBoardLogger('tb_logs', name=model.name)
+	trainer = pl.Trainer(gpus=1, logger=logger, log_every_n_steps=min(len(train_loader), 50))
+	trainer.fit(model, train_loader, test_loader)

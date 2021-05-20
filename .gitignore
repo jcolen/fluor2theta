@@ -2,6 +2,7 @@ __pycache__
 slurm_scripts
 *.sh
 *.swp
+*logs
 figures
 models
 
